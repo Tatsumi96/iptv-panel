@@ -1,0 +1,443 @@
+// IPTV Home Gateway — Prisma schema
+// Single upstream account (Xtream Codes or M3U) fanned out to many time-limited tickets.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ProviderKind {
+  XTREAM
+  M3U
+}
+
+enum ProviderStatus {
+  UNKNOWN
+  ONLINE
+  DEGRADED
+  OFFLINE
+}
+
+enum CategoryKind {
+  LIVE
+  VOD
+  SERIES
+}
+
+enum TicketStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  REVOKED
+}
+
+enum TicketDurationPreset {
+  H24
+  D7
+  D30
+  CUSTOM
+}
+
+enum OverflowPolicy {
+  /// Refuse the new stream with an explicit error message.
+  REJECT
+  /// Cut the oldest active session (ticket scope) or oldest upstream feed (provider scope).
+  EVICT_OLDEST
+}
+
+enum StreamEndReason {
+  CLIENT_DISCONNECT
+  TICKET_LIMIT
+  UPSTREAM_LIMIT
+  IDLE_TIMEOUT
+  UPSTREAM_ERROR
+  PROVIDER_DISABLED
+  SERVER_SHUTDOWN
+}
+
+enum AdminRole {
+  OWNER
+  ADMIN
+  VIEWER
+}
+
+enum IpBlockScope {
+  GLOBAL
+  TICKET
+}
+
+// ---------------------------------------------------------------------------
+// Upstream providers
+// ---------------------------------------------------------------------------
+
+model UpstreamProvider {
+  id           String   @id @default(uuid())
+  name         String
+  kind         ProviderKind
+
+  /// Base URL of the upstream server (no trailing slash).
+  baseUrl      String
+  /// For M3U providers: the raw playlist URL (may be protected by a token).
+  playlistUrl  String?
+
+  /// AES-256-GCM sealed credentials. Never returned to API consumers.
+  /// Format: base64url(iv).base64url(authTag).base64url(ciphertext)
+  secretsEnc   String?
+
+  /// Maximum simultaneous upstream connections allowed by the account (from player_api.php).
+  maxConnections   Int      @default(1)
+  /// Behaviour when the upstream limit is reached.
+  overflowPolicy   OverflowPolicy @default(REJECT)
+  /// Number of upstream connections currently opened (denormalised snapshot).
+  activeConnections Int     @default(0)
+
+  status       ProviderStatus @default(UNKNOWN)
+  isEnabled    Boolean        @default(true)
+  lastTestedAt DateTime?
+  lastError    String?
+  /// Auto refresh interval for content synchronisation (seconds).
+  refreshIntervalSec Int       @default(3600)
+  /// Last successful content synchronisation.
+  lastSyncedAt DateTime?
+  /// Free-form provider settings (epg url, headers, ...).
+  settings     Json?
+  /// Custom HTTP headers used when fetching upstream resources.
+  extraHeaders Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories Category[]
+  channels   Channel[]
+  movies     Movie[]
+  series     Series[]
+  tickets    Ticket[]
+  epgEntries EpgEntry[]
+  streamLogs StreamLog[]
+  syncRuns   SyncRun[]
+
+  @@index([kind, isEnabled])
+}
+
+model SyncRun {
+  id         String   @id @default(uuid())
+  providerId String
+  kind       SyncKind
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  ok         Boolean  @default(false)
+  message    String?
+  stats      Json?
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, startedAt])
+}
+
+enum SyncKind {
+  CONTENT
+  EPG
+  FULL
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue
+// ---------------------------------------------------------------------------
+
+model Category {
+  id         String       @id @default(uuid())
+  providerId String
+  kind       CategoryKind
+  /// Category identifier as exposed by the upstream (Xtream category_id).
+  externalId String
+  name       String
+  /// Optional parent category (Xtream nested categories).
+  parentExternalId String?
+  sortOrder  Int          @default(0)
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  channels Channel[]
+  movies   Movie[]
+  series   Series[]
+  tickets  TicketCategory[]
+
+  @@unique([providerId, kind, externalId])
+  @@index([providerId, kind])
+}
+
+model Channel {
+  id         String  @id @default(uuid())
+  providerId String
+  categoryId String?
+  /// Upstream stream id (Xtream stream_id / M3U tvg-id or url hash).
+  externalId String
+  name       String
+  tvgId      String?
+  /// Channel id used to join the EPG.
+  epgChannelId String?
+  streamIcon String?
+  /// "live" or a catch-up window.
+  streamType String  @default("live")
+  order      Int     @default(0)
+  timeshift  Boolean @default(false)
+  tvArchiveDuration Int?
+  /// Direct media URL when the source is a plain M3U playlist.
+  streamUrl  String?
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  category Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  epgEntries EpgEntry[]
+  streamLogs StreamLog[]
+
+  @@unique([providerId, externalId])
+  @@index([providerId, categoryId])
+  @@index([name])
+}
+
+model Movie {
+  id         String  @id @default(uuid())
+  providerId String
+  categoryId String?
+  externalId String
+  name       String
+  streamIcon String?
+  rating     String?
+  releaseYear Int?
+  plot       String?
+  containerExtension String?
+  durationSec Int?
+  addedAt    DateTime?
+  /// Direct media URL for M3U sources with .mp4/.mkv entries.
+  streamUrl  String?
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  category Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@unique([providerId, externalId])
+  @@index([providerId, categoryId])
+}
+
+model Series {
+  id         String  @id @default(uuid())
+  providerId String
+  categoryId String?
+  externalId String
+  name       String
+  cover      String?
+  plot       String?
+  cast       String?
+  genre      String?
+  releaseDate String?
+  /// Direct media URL for M3U sources with episode entries.
+  streamUrl  String?
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  category Category?         @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  episodes SeriesEpisode[]
+
+  @@unique([providerId, externalId])
+  @@index([providerId, categoryId])
+}
+
+model SeriesEpisode {
+  id         String  @id @default(uuid())
+  seriesId   String
+  externalId String
+  season     Int     @default(1)
+  episode    Int     @default(1)
+  title      String?
+  containerExtension String?
+  durationSec Int?
+  addedAt    DateTime?
+  plot       String?
+  streamIcon String?
+  streamUrl  String?
+
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, externalId])
+  @@index([seriesId])
+}
+
+model EpgEntry {
+  id               String   @id @default(uuid())
+  providerId       String
+  channelExternalId String
+  title            String
+  description      String?
+  lang             String?
+  startAt          DateTime
+  stopAt           DateTime
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  channel  Channel?         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  channelId String?
+
+  @@index([providerId, channelExternalId, startAt])
+  @@index([startAt])
+}
+
+// ---------------------------------------------------------------------------
+// Tickets (per-device access credentials)
+// ---------------------------------------------------------------------------
+
+model Ticket {
+  id       String @id @default(uuid())
+  label    String
+  username String @unique
+  password String
+
+  providerId String
+  startsAt   DateTime @default(now())
+  expiresAt  DateTime
+  status     TicketStatus @default(ACTIVE)
+
+  /// Maximum simultaneous client sessions for this ticket.
+  maxConnections Int    @default(1)
+  /// Behaviour when the ticket limit is reached.
+  overflowPolicy OverflowPolicy @default(REJECT)
+  /// Restrict the visible catalogue to the linked categories only.
+  useCategoryFilter Boolean @default(false)
+
+  notes      String?
+  lastConnectedAt DateTime?
+  lastIp      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  provider   UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  categories TicketCategory[]
+  ipBlocks   IpBlock[]
+  streamLogs StreamLog[]
+
+  @@index([status, expiresAt])
+  @@index([providerId])
+}
+
+model TicketCategory {
+  ticketId   String
+  categoryId String
+
+  ticket   Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, categoryId])
+}
+
+// ---------------------------------------------------------------------------
+// Security
+// ---------------------------------------------------------------------------
+
+model IpBlock {
+  id       String      @id @default(uuid())
+  cidr     String
+  scope    IpBlockScope @default(GLOBAL)
+  ticketId String?
+  reason   String?
+  expiresAt DateTime?
+  hits     Int         @default(0)
+  createdAt DateTime   @default(now())
+
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([scope])
+  @@index([ticketId])
+}
+
+model AdminUser {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  displayName  String?
+  role         AdminRole @default(ADMIN)
+  isActive     Boolean   @default(true)
+
+  failedLogins Int       @default(0)
+  lockedUntil  DateTime?
+  lastLoginAt  DateTime?
+  lastLoginIp  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@index([isActive])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  /// SHA-256 of the refresh token — the raw token is never stored.
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  userAgent String?
+  ip        String?
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  adminId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  meta       Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  admin AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Runtime data
+// ---------------------------------------------------------------------------
+
+model StreamLog {
+  id         String  @id @default(uuid())
+  ticketId   String?
+  providerId String?
+  channelId  String?
+  channelName String?
+  streamId   String?
+  clientIp   String
+  userAgent  String?
+  startedAt  DateTime @default(now())
+  endedAt    DateTime?
+  durationSec Int?
+  bytes      BigInt   @default(0)
+  endReason  StreamEndReason?
+
+  ticket   Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  provider UpstreamProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  channel  Channel?         @relation(fields: [channelId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, startedAt])
+  @@index([startedAt])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

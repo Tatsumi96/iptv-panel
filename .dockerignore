@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/.turbo
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+nginx/certs/*
+!nginx/certs/README.txt

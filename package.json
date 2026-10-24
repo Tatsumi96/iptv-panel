@@ -1,0 +1,43 @@
+{
+  "name": "iptv-home-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IPTV Home Gateway — partage controle d'un compte Xtream Codes / M3U vers plusieurs appareils via des tickets a duree limitee",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace @iptv/api",
+    "dev:web": "npm run dev --workspace @iptv/web",
+    "build": "npm run build --workspace @iptv/api && npm run build --workspace @iptv/web",
+    "test": "npm run test --workspace @iptv/api",
+    "test:cov": "npm run test:cov --workspace @iptv/api",
+    "lint": "npm run lint --workspace @iptv/api && npm run lint --workspace @iptv/web",
+    "typecheck": "npm run typecheck --workspace @iptv/api && npm run typecheck --workspace @iptv/web",
+    "prisma:generate": "npm run prisma:generate --workspace @iptv/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace @iptv/api",
+    "prisma:deploy": "npm run prisma:deploy --workspace @iptv/api",
+    "prisma:seed": "npm run prisma:seed --workspace @iptv/api",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f api"
+  },
+  "overrides": {
+    "test-exclude": "^8.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.13.0"
+  },
+  "allowScripts": {
+    "@parcel/watcher@2.6.0": true,
+    "@prisma/client@6.19.3": true,
+    "prisma@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "argon2@0.41.1": true,
+    "unrs-resolver@1.12.2": true
+  }
+}
